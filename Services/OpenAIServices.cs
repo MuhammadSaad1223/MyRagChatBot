@@ -1,18 +1,17 @@
-﻿using OpenAI;
+﻿using Microsoft.Extensions.Logging;
 using System.Net.Http.Headers;
 using System.Text;
 using System.Text.Json;
-using OpenAI.Embeddings;
 
 namespace MyRagChatBot.Services
 {
-    public class OpenAIService : IOpenAIService
+    public class GeminiAIService : IGeminiAIService
     {
         private readonly HttpClient _httpClient;
-        private readonly ILogger<OpenAIService> _logger;
+        private readonly ILogger<GeminiAIService> _logger;
         private readonly IConfiguration _configuration;
 
-        public OpenAIService(HttpClient httpClient, ILogger<OpenAIService> logger, IConfiguration configuration)
+        public GeminiAIService(HttpClient httpClient, ILogger<GeminiAIService> logger, IConfiguration configuration)
         {
             _httpClient = httpClient;
             _logger = logger;
@@ -21,17 +20,21 @@ namespace MyRagChatBot.Services
             // Ensure BaseAddress is set
             InitializeHttpClient();
 
-            _logger.LogInformation("OpenAIService initialized for OpenRouter");
+            _logger.LogInformation("GeminiAIService initialized");
         }
 
         private void InitializeHttpClient()
         {
             try
             {
-                // Set BaseAddress if not already set
+                // Set BaseAddress for Gemini API
                 if (_httpClient.BaseAddress == null)
                 {
-                    var baseUrl = _configuration["OpenAI:BaseUrl"] ?? "https://openrouter.ai/api/v1/";
+                    var baseUrl = _configuration["Gemini:BaseUrl"] ?? "https://generativelanguage.googleapis.com/v1beta/";
+                    
+                    _logger.LogInformation($"BaseUrl from config: {_configuration["Gemini:BaseUrl"]}");
+                    _logger.LogInformation($"ApiKey exists: {!string.IsNullOrEmpty(_configuration["Gemini:ApiKey"])}");
+                    
                     if (!baseUrl.EndsWith("/"))
                         baseUrl += "/";
 
@@ -39,21 +42,14 @@ namespace MyRagChatBot.Services
                     _logger.LogInformation($"HttpClient BaseAddress set to: {baseUrl}");
                 }
 
-                // Add Authorization header
-                var apiKey = _configuration["OpenAI:ApiKey"];
-                if (!string.IsNullOrEmpty(apiKey))
-                {
-                    if (!_httpClient.DefaultRequestHeaders.Contains("Authorization"))
-                    {
-                        _httpClient.DefaultRequestHeaders.Authorization =
-                            new AuthenticationHeaderValue("Bearer", apiKey);
-                    }
-                }
+                // Clear any existing headers
+                _httpClient.DefaultRequestHeaders.Clear();
 
-                // Add other required headers for OpenRouter
+                // Add User-Agent
                 _httpClient.DefaultRequestHeaders.TryAddWithoutValidation("User-Agent", "MyRagChatBot/1.0");
-                _httpClient.DefaultRequestHeaders.TryAddWithoutValidation("X-Title", "MyRagChatBot");
-                _httpClient.DefaultRequestHeaders.TryAddWithoutValidation("HTTP-Referer", "https://localhost:7031");
+
+                // Note: Gemini API uses API key as query parameter, not Authorization header
+                // So we don't set Authorization header here
             }
             catch (Exception ex)
             {
@@ -67,73 +63,105 @@ namespace MyRagChatBot.Services
             {
                 _logger.LogInformation($"SimpleChat: {message}");
 
-                var model = _configuration["OpenAI:Model"] ?? "openai/gpt-3.5-turbo";
+                var model = _configuration["Gemini:Model"] ?? "gemini-2.5-flash";
+                var apiKey = _configuration["Gemini:ApiKey"];
 
+                if (string.IsNullOrEmpty(apiKey))
+                {
+                    _logger.LogError("Gemini API Key is missing in configuration");
+                    return "Error: Gemini API Key is not configured.";
+                }
+
+                // Gemini API format (different from OpenAI)
                 var requestBody = new
                 {
-                    model = model,
-                    messages = new[]
+                    contents = new[]
                     {
-                        // OPTION 3: Better system prompt
                         new
                         {
-                            role = "system",
-                            content = "You are a helpful assistant. Format your responses in a clean, readable way. " +
-                                     "Follow these formatting rules:\n" +
-                                     "1. DO NOT use markdown tables (| | syntax).\n" +
-                                     "2. Use bullet points or numbered lists instead of tables.\n" +
-                                     "3. For key-value information, use simple format: **Key:** Value\n" +
-                                     "4. Code examples should use triple backticks with language: ```csharp\ncode here\n```\n" +
-                                     "5. Keep paragraphs short and readable.\n" +
-                                     "6. Use headings with ## or ### but keep it simple.\n" +
-                                     "7. Make the response conversational and easy to understand."
-                        },
-                        new { role = "user", content = message }
+                            parts = new[]
+                            {
+                                new { text = message }
+                            }
+                        }
                     },
-                    max_tokens = 500,
-                    temperature = 0.7
+                    generationConfig = new
+                    {
+                        maxOutputTokens = 2048,
+                        temperature = 0.7,
+                        topP = 0.95,
+                        topK = 40
+                    },
+                    safetySettings = new[]
+                    {
+                        new
+                        {
+                            category = "HARM_CATEGORY_HARASSMENT",
+                            threshold = "BLOCK_NONE"
+                        },
+                        new
+                        {
+                            category = "HARM_CATEGORY_HATE_SPEECH",
+                            threshold = "BLOCK_NONE"
+                        },
+                        new
+                        {
+                            category = "HARM_CATEGORY_SEXUALLY_EXPLICIT",
+                            threshold = "BLOCK_NONE"
+                        },
+                        new
+                        {
+                            category = "HARM_CATEGORY_DANGEROUS_CONTENT",
+                            threshold = "BLOCK_NONE"
+                        }
+                    }
                 };
 
                 var json = JsonSerializer.Serialize(requestBody);
                 var content = new StringContent(json, Encoding.UTF8, "application/json");
 
-                _logger.LogInformation($"Calling OpenRouter API with model: {model}");
-                _logger.LogInformation($"BaseAddress: {_httpClient.BaseAddress}");
-                _logger.LogInformation($"Full URL: {_httpClient.BaseAddress}chat/completions");
+                // Gemini API endpoint format
+                var endpoint = $"models/{model}:generateContent?key={apiKey}";
 
-                var response = await _httpClient.PostAsync("chat/completions", content);
+                _logger.LogInformation($"Calling Gemini API with model: {model}");
+                _logger.LogInformation($"Full URL: {_httpClient.BaseAddress}{endpoint}");
+
+                var response = await _httpClient.PostAsync(endpoint, content);
 
                 _logger.LogInformation($"Response status: {response.StatusCode}");
 
                 if (response.IsSuccessStatusCode)
                 {
                     var responseJson = await response.Content.ReadAsStringAsync();
-                    _logger.LogInformation($"OpenRouter response successful");
+                    _logger.LogInformation($"Gemini response successful");
 
                     using var doc = JsonDocument.Parse(responseJson);
                     var root = doc.RootElement;
 
-                    if (root.TryGetProperty("choices", out var choices) &&
-                        choices.GetArrayLength() > 0)
+                    // Extract Gemini response
+                    if (root.TryGetProperty("candidates", out var candidates) &&
+                        candidates.GetArrayLength() > 0 &&
+                        candidates[0].TryGetProperty("content", out var contentObj) &&
+                        contentObj.TryGetProperty("parts", out var parts) &&
+                        parts.GetArrayLength() > 0 &&
+                        parts[0].TryGetProperty("text", out var text))
                     {
-                        var answer = choices[0].GetProperty("message")
-                                               .GetProperty("content")
-                                               .GetString() ?? "No response";
-
+                        var answer = text.GetString() ?? "No response";
                         _logger.LogInformation($"Got answer: {answer}");
-
-                        //Optional: Post-process to ensure no markdown tables
                         return CleanResponse(answer);
+                    }
+                    else
+                    {
+                        _logger.LogWarning($"Unexpected response format: {responseJson}");
+                        return "Sorry, I received an unexpected response format.";
                     }
                 }
                 else
                 {
                     var errorContent = await response.Content.ReadAsStringAsync();
-                    _logger.LogError($"OpenRouter Error ({response.StatusCode}): {errorContent}");
+                    _logger.LogError($"Gemini Error ({response.StatusCode}): {errorContent}");
                     return $"API Error: {response.StatusCode} - {errorContent}";
                 }
-
-                return "Sorry, I couldn't get a response.";
             }
             catch (Exception ex)
             {
@@ -141,6 +169,7 @@ namespace MyRagChatBot.Services
                 return $"Error: {ex.Message}";
             }
         }
+
         private string CleanResponse(string response)
         {
             if (string.IsNullOrEmpty(response))
@@ -196,7 +225,6 @@ namespace MyRagChatBot.Services
             return cleaned.Trim();
         }
 
-        // For testing, return dummy embeddings
         public async Task<float[]> GetEmbedding(string text)
         {
             try
@@ -229,7 +257,13 @@ namespace MyRagChatBot.Services
             {
                 _logger.LogInformation($"GetChatResponse with context length: {context?.Length ?? 0}");
 
-                var model = _configuration["OpenAI:Model"] ?? "openai/gpt-3.5-turbo";
+                var model = _configuration["Gemini:Model"] ?? "gemini-1.5-flash-latest";
+                var apiKey = _configuration["Gemini:ApiKey"];
+
+                if (string.IsNullOrEmpty(apiKey))
+                {
+                    return "Error: Gemini API Key is not configured.";
+                }
 
                 string prompt;
                 if (string.IsNullOrEmpty(context))
@@ -241,30 +275,47 @@ namespace MyRagChatBot.Services
                     prompt = $"Context:\n{context}\n\nQuestion: {userQuestion}\n\nAnswer based on context:";
                 }
 
+                // Gemini API format
                 var requestBody = new
                 {
-                    model = model,
-                    messages = new[]
+                    contents = new[]
                     {
-                        // Same improved system prompt for RAG responses
                         new
                         {
-                            role = "system",
-                            content = "You are a helpful assistant that answers questions based on provided context. " +
-                                     "Format your responses in a clean, readable way. " +
-                                     "DO NOT use markdown tables (| | syntax). Use bullet points or simple key-value pairs instead. " +
-                                     "Make sure code examples are properly formatted with triple backticks."
-                        },
-                        new { role = "user", content = prompt }
+                            parts = new[]
+                            {
+                                new { text = prompt }
+                            }
+                        }
                     },
-                    max_tokens = 1000,
-                    temperature = 0.3
+                    generationConfig = new
+                    {
+                        maxOutputTokens = 2048,
+                        temperature = 0.3,
+                        topP = 0.95,
+                        topK = 40
+                    },
+                    safetySettings = new[]
+                    {
+                        new
+                        {
+                            category = "HARM_CATEGORY_HARASSMENT",
+                            threshold = "BLOCK_NONE"
+                        },
+                        new
+                        {
+                            category = "HARM_CATEGORY_HATE_SPEECH",
+                            threshold = "BLOCK_NONE"
+                        }
+                    }
                 };
 
                 var json = JsonSerializer.Serialize(requestBody);
                 var content = new StringContent(json, Encoding.UTF8, "application/json");
 
-                var response = await _httpClient.PostAsync("chat/completions", content);
+                // Gemini endpoint
+                var endpoint = $"models/{model}:generateContent?key={apiKey}";
+                var response = await _httpClient.PostAsync(endpoint, content);
 
                 if (response.IsSuccessStatusCode)
                 {
@@ -273,14 +324,15 @@ namespace MyRagChatBot.Services
                     using var doc = JsonDocument.Parse(responseJson);
                     var root = doc.RootElement;
 
-                    if (root.TryGetProperty("choices", out var choices) &&
-                        choices.GetArrayLength() > 0)
+                    // Extract Gemini response
+                    if (root.TryGetProperty("candidates", out var candidates) &&
+                        candidates.GetArrayLength() > 0 &&
+                        candidates[0].TryGetProperty("content", out var contentObj) &&
+                        contentObj.TryGetProperty("parts", out var parts) &&
+                        parts.GetArrayLength() > 0 &&
+                        parts[0].TryGetProperty("text", out var text))
                     {
-                        var answer = choices[0].GetProperty("message")
-                                               .GetProperty("content")
-                                               .GetString() ?? "No response";
-
-                        // Clean the response
+                        var answer = text.GetString() ?? "No response";
                         return CleanResponse(answer);
                     }
                 }
@@ -299,43 +351,31 @@ namespace MyRagChatBot.Services
             }
         }
 
-        // Dummy embedding for testing (optional)
-        private async Task<float[]> GetDummyEmbedding(string text)
-        {
-            await Task.Delay(100);
-
-            var random = new Random();
-            var embedding = new float[1536];
-
-            for (int i = 0; i < embedding.Length; i++)
-            {
-                embedding[i] = (float)(random.NextDouble() * 2 - 1);
-            }
-
-            // Normalize
-            var magnitude = Math.Sqrt(embedding.Sum(x => x * x));
-            if (magnitude > 0)
-            {
-                for (int i = 0; i < embedding.Length; i++)
-                {
-                    embedding[i] /= (float)magnitude;
-                }
-            }
-
-            return embedding;
-        }
-        //////////////////// For PDF/File Upload ///////////////
+        // For PDF/File Upload - Updated for Gemini
         public async Task<float[]> CreateEmbeddingAsync(string text)
         {
             try
             {
-                var model = _configuration["OpenAI:EmbeddingModel"]
-                            ?? "openai/text-embedding-3-small";
+                var model = _configuration["Gemini:EmbeddingModel"] ?? "embedding-001";
+                var apiKey = _configuration["Gemini:ApiKey"];
 
+                if (string.IsNullOrEmpty(apiKey))
+                {
+                    _logger.LogError("Gemini API Key is missing for embeddings");
+                    return Array.Empty<float>();
+                }
+
+                // Gemini embedding format
                 var requestBody = new
                 {
-                    model = model,
-                    input = text
+                    model = $"models/{model}",
+                    content = new
+                    {
+                        parts = new[]
+                        {
+                            new { text = text }
+                        }
+                    }
                 };
 
                 var json = JsonSerializer.Serialize(requestBody);
@@ -343,7 +383,9 @@ namespace MyRagChatBot.Services
 
                 _logger.LogInformation($"Creating embedding using model: {model}");
 
-                var response = await _httpClient.PostAsync("embeddings", content);
+                // Gemini embedding endpoint
+                var endpoint = $"models/{model}:embedContent?key={apiKey}";
+                var response = await _httpClient.PostAsync(endpoint, content);
 
                 if (!response.IsSuccessStatusCode)
                 {
@@ -355,14 +397,17 @@ namespace MyRagChatBot.Services
                 var responseJson = await response.Content.ReadAsStringAsync();
                 using var doc = JsonDocument.Parse(responseJson);
 
-                var embedding = doc.RootElement
-                    .GetProperty("data")[0]
-                    .GetProperty("embedding")
-                    .EnumerateArray()
-                    .Select(x => x.GetSingle())
-                    .ToArray();
+                // Extract embedding from Gemini response
+                if (doc.RootElement.TryGetProperty("embedding", out var embeddingObj) &&
+                    embeddingObj.TryGetProperty("values", out var values))
+                {
+                    var embedding = values.EnumerateArray()
+                                          .Select(x => x.GetSingle())
+                                          .ToArray();
+                    return embedding;
+                }
 
-                return embedding;
+                return Array.Empty<float>();
             }
             catch (Exception ex)
             {
@@ -370,5 +415,14 @@ namespace MyRagChatBot.Services
                 return Array.Empty<float>();
             }
         }
+    }
+
+    // Interface definition
+    public interface IGeminiAIService
+    {
+        Task<string> SimpleChat(string message);
+        Task<float[]> GetEmbedding(string text);
+        Task<string> GetChatResponse(string userQuestion, string context = "");
+        Task<float[]> CreateEmbeddingAsync(string text);
     }
 }

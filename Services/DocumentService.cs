@@ -97,12 +97,12 @@ namespace MyRagChatBot.Services
     public class DocumentService : IDocumentService
     {
         private readonly AppDbContext _db;
-        private readonly OpenAIService _openAi;
+        private readonly IGeminiAIService _geminiAi;
 
-        public DocumentService(AppDbContext db, OpenAIService openAi)
+        public DocumentService(AppDbContext db, IGeminiAIService geminiAi)
         {
             _db = db;
-            _openAi = openAi;
+            _geminiAi = geminiAi;
         }
 
         public async Task ProcessFileAsync(IBrowserFile file)
@@ -118,7 +118,7 @@ namespace MyRagChatBot.Services
 
             foreach (var chunk in chunks)
             {
-                var embedding = await _openAi.CreateEmbeddingAsync(chunk);
+                var embedding = await _geminiAi.CreateEmbeddingAsync(chunk);
 
                 _db.DocumentChunks.Add(new DocumentChunk
                 {
@@ -148,7 +148,7 @@ namespace MyRagChatBot.Services
                 _ => string.Empty
             };
         }
-        ///////////// For PDF/File upload //////////
+
         private async Task<string> ExtractTextFromPdf(IBrowserFile file)
         {
             using var stream = file.OpenReadStream(20_000_000);
@@ -201,4 +201,3 @@ namespace MyRagChatBot.Services
         }
     }
 }
-

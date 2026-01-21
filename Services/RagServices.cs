@@ -65,21 +65,23 @@ namespace MyRagChatBot.Services
 {
     public class RagService
     {
-        private readonly IOpenAIService _openAIService;
+        private readonly IGeminiAIService _geminiAIService; // Changed from IOpenAIService
         private readonly IVectorDatabase _vectorDatabase;
         private readonly IDocumentService _documentService;
         private readonly ILogger<RagService> _logger;
 
         public RagService(
-            IOpenAIService openAIService,
+            IGeminiAIService geminiAIService, // Changed parameter type
             IVectorDatabase vectorDatabase,
             IDocumentService documentService,
             ILogger<RagService> logger)
         {
-            _openAIService = openAIService;
+            _geminiAIService = geminiAIService; // Updated variable name
             _vectorDatabase = vectorDatabase;
             _documentService = documentService;
             _logger = logger;
+
+            _logger.LogInformation("RagService initialized with Gemini AI");
         }
 
         // Main RAG pipeline for processing user queries
@@ -90,12 +92,12 @@ namespace MyRagChatBot.Services
             try
             {
                 // Step 1: Get embedding for the query text
-                var queryEmbedding = await _openAIService.GetEmbedding(query);
+                var queryEmbedding = await _geminiAIService.GetEmbedding(query); // Updated method call
 
                 if (queryEmbedding.Length == 0)
                 {
                     _logger.LogWarning("Failed to get query embedding, falling back to simple chat");
-                    return await _openAIService.SimpleChat(query);
+                    return await _geminiAIService.SimpleChat(query); // Updated method call
                 }
 
                 // Step 2: Search the vector DB for the most similar document chunks
@@ -104,14 +106,14 @@ namespace MyRagChatBot.Services
                 if (similarChunks.Count == 0)
                 {
                     _logger.LogInformation("No relevant documents found, using simple chat");
-                    return await _openAIService.SimpleChat(query);
+                    return await _geminiAIService.SimpleChat(query); // Updated method call
                 }
 
                 // Step 3: Build a contextual prompt from retrieved chunks
                 string context = BuildContextFromChunks(similarChunks);
 
-                // Step 4: Query OpenAI with context and user query to get the final answer
-                var answer = await _openAIService.GetChatResponse(query, context);
+                // Step 4: Query Gemini with context and user query to get the final answer
+                var answer = await _geminiAIService.GetChatResponse(query, context); // Updated method call
 
                 _logger.LogInformation("Successfully generated RAG response");
                 return answer;
@@ -145,7 +147,8 @@ namespace MyRagChatBot.Services
                     if (string.IsNullOrWhiteSpace(chunk))
                         continue;
 
-                    var embedding = await _openAIService.GetEmbedding(chunk);
+                    // Use CreateEmbeddingAsync for better embedding generation
+                    var embedding = await _geminiAIService.CreateEmbeddingAsync(chunk); // Updated method call
 
                     if (embedding.Length == 0)
                         continue;
@@ -164,6 +167,8 @@ namespace MyRagChatBot.Services
                     // Store this chunk + embedding in your vector DB
                     await _vectorDatabase.StoreDocumentChunk(documentChunk);
                     processedCount++;
+
+                    _logger.LogInformation($"Processed chunk {processedCount} of {chunks.Count}");
                 }
 
                 return $"Successfully processed {processedCount} chunks from {file.Name}";
@@ -181,13 +186,18 @@ namespace MyRagChatBot.Services
             var context = new StringBuilder();
             int chunkNumber = 1;
 
+            context.AppendLine("Based on the following document content:");
+            context.AppendLine();
+
             foreach (var chunk in chunks)
             {
-                context.AppendLine($"[Document {chunkNumber} from '{chunk.DocumentName}']");
+                context.AppendLine($"--- Document Section {chunkNumber} from '{chunk.DocumentName}' ---");
                 context.AppendLine(chunk.Content);
                 context.AppendLine();
                 chunkNumber++;
             }
+
+            context.AppendLine("Please answer the user's question based on the above context.");
 
             return context.ToString().Trim();
         }
@@ -202,6 +212,21 @@ namespace MyRagChatBot.Services
         public async Task ClearAllDocuments()
         {
             await _vectorDatabase.ClearAllChunks();
+            _logger.LogInformation("All documents cleared from vector database");
+        }
+
+        // New method for testing Gemini connection
+        public async Task<string> TestGeminiConnection()
+        {
+            try
+            {
+                var response = await _geminiAIService.SimpleChat("Hello, are you working?");
+                return $"Gemini Connection Test: {response.Substring(0, Math.Min(50, response.Length))}...";
+            }
+            catch (Exception ex)
+            {
+                return $"Gemini Connection Failed: {ex.Message}";
+            }
         }
     }
 }
