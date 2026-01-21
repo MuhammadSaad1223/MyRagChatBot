@@ -65,4 +65,13 @@ using (var scope = app.Services.CreateScope())
     await db.Database.EnsureCreatedAsync();
 }
 
+app.MapGet("/health", () => Results.Ok(new
+{
+    status = "healthy",
+    timestamp = DateTime.UtcNow,
+    service = "MyRagChatBot"
+}));
+
+app.MapGet("/", () => "MyRagChatBot is running on Render!");
+
 app.Run();
