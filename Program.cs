@@ -5,6 +5,10 @@ using MyRagChatBot.Components;
 
 var builder = WebApplication.CreateBuilder(args);
 
+// Railway uses PORT environment variable
+var port = Environment.GetEnvironmentVariable("PORT") ?? "8080";
+builder.WebHost.UseUrls($"http://*:{port}");
+
 // Program.cs
 builder.Services.AddSingleton<MarkdownService>();
 
